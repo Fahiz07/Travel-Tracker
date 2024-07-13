@@ -4,53 +4,67 @@ import pkg from 'pg';
 import dotenv from 'dotenv';
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 const { Pool } = pkg;
 
 dotenv.config();
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false, 
-  },
+  ssl: { rejectUnauthorized: false },
 });
 
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static("public"));
 
 let currentUserId = 1;
-
 let users = [];
 
 async function checkVisited() {
-  const result = await db.query(
-    "SELECT state_code FROM visited_states JOIN users ON users.id = user_id WHERE user_id = $1; ",
-    [currentUserId]
-  );
-  let states = [];
-  result.rows.forEach((state) => {
-    states.push(state.state_code);
-  });
-  return states;
+  try {
+    const result = await pool.query(
+      "SELECT state_code FROM visited_states JOIN users ON users.id = user_id WHERE user_id = $1;",
+      [currentUserId]
+    );
+    return result.rows.map(state => state.state_code);
+  } catch (err) {
+    console.error(err);
+    return [];
+  }
 }
 
 async function getCurrentUser() {
-  const result = await db.query("SELECT * FROM users");
-  users = result.rows;
-  return users.find((user) => user.id == currentUserId);
+  try {
+    const result = await pool.query("SELECT * FROM users");
+    users = result.rows;
+    return users.find(user => user.id == currentUserId);
+  } catch (err) {
+    console.error(err);
+    return null;
+  }
 }
 
 app.get("/", async (req, res) => {
-  const states = await checkVisited();
-  const currentUser = await getCurrentUser();
-  res.render("index.ejs", {
-    states: states,
-    total: states.length,
-    users: users,
-    color: currentUser.color,
-    error: null
-  });
+  try {
+    const states = await checkVisited();
+    const currentUser = await getCurrentUser();
+    res.render("index.ejs", {
+      states,
+      total: states.length,
+      users,
+      color: currentUser ? currentUser.color : null,
+      error: null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.render("index.ejs", {
+      states: [],
+      total: 0,
+      users,
+      color: null,
+      error: err.message,
+    });
+  }
 });
 
 app.post("/add", async (req, res) => {
@@ -58,7 +72,7 @@ app.post("/add", async (req, res) => {
   const currentUser = await getCurrentUser();
 
   try {
-    const stateResult = await db.query(
+    const stateResult = await pool.query(
       "SELECT state_code FROM states WHERE LOWER(state_name) = $1;",
       [input.toLowerCase()]
     );
@@ -69,8 +83,7 @@ app.post("/add", async (req, res) => {
 
     const stateCode = stateResult.rows[0].state_code;
 
-    // Check if the state has already been visited by the current user
-    const visitedResult = await db.query(
+    const visitedResult = await pool.query(
       "SELECT * FROM visited_states WHERE state_code = $1 AND user_id = $2;",
       [stateCode, currentUserId]
     );
@@ -79,46 +92,53 @@ app.post("/add", async (req, res) => {
       throw new Error("State has already been added, try again.");
     }
 
-    await db.query(
+    await pool.query(
       "INSERT INTO visited_states (state_code, user_id) VALUES ($1, $2)",
       [stateCode, currentUserId]
     );
     res.redirect("/");
   } catch (err) {
-    console.log(err);
+    console.error(err);
     const states = await checkVisited();
     res.render("index.ejs", {
-      states: states,
+      states,
       total: states.length,
-      users: users,
-      color: currentUser.color,
-      error: err.message
+      users,
+      color: currentUser ? currentUser.color : null,
+      error: err.message,
     });
   }
 });
 
 app.post("/user", async (req, res) => {
-  if (req.body.add === "new") {
-    res.render("new.ejs");
-  } else {
-    currentUserId = req.body.user;
+  try {
+    if (req.body.add === "new") {
+      res.render("new.ejs");
+    } else {
+      currentUserId = req.body.user;
+      res.redirect("/");
+    }
+  } catch (err) {
+    console.error(err);
     res.redirect("/");
   }
 });
 
 app.post("/new", async (req, res) => {
-  const name = req.body.name;
-  const color = req.body.color;
+  const { name, color } = req.body;
 
-  const result = await db.query(
-    "INSERT INTO users (name, color) VALUES($1, $2) RETURNING *;",
-    [name, color]
-  );
+  try {
+    const result = await pool.query(
+      "INSERT INTO users (name, color) VALUES($1, $2) RETURNING *;",
+      [name, color]
+    );
 
-  const id = result.rows[0].id;
-  currentUserId = id;
-
-  res.redirect("/");
+    currentUserId = result.rows[0].id;
+    res.redirect("/");
+  } catch (err) {
+    console.error(err);
+    res.redirect("/new");
+  }
 });
 
 app.listen(port, () => {
